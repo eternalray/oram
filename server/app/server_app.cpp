@@ -352,13 +352,13 @@ int main(){
   if(!p_msg3){
     cerr << "sgx_ra_proc_msg2 failed" << endl;
     ret = -1;
-    goto CLEANUP;
+    return -1;
   }
 
   if((sgx_status_t)ret != SGX_SUCCESS){
     cerr << "sgx_ra_proc_msg2 failed" << endl;
     ret = -1;
-    goto CLEANUP;
+    return -1;
   }
 
   cout << "msg3 generated" << endl;
@@ -369,7 +369,7 @@ int main(){
 
   if(p_msg3_full == NULL){
     ret = -1;
-    goto CLEANUP;
+    return -1;
   }
 
   p_msg3_full->type = TYPE_RA_MSG3;
@@ -377,7 +377,7 @@ int main(){
   memcpy(p_msg3_full->body, p_msg3, msg3_size);
   if(p_msg3_full->body == NULL){
     ret = -1;
-    goto CLEANUP;
+    return -1;
   }
 
   cout << "send msg3" << endl;
@@ -408,6 +408,27 @@ int main(){
   cout << "got attestation result" << endl;
 
   PRINT_BYTE_ARRAY(stdout, p_att_result_msg_full->body, p_att_result_msg_full->size);
+
+  sample_ra_att_result_msg_t* p_att_result_msg_body =
+             (sample_ra_att_result_msg_t *)((uint8_t*)p_att_result_msg_full
+              + sizeof(ra_response_header_t));
+
+  ret = verify_att_result_mac(global_eid,
+                &status,
+                context,
+                (uint8_t*)&p_att_result_msg_body->platform_info_blob,
+                sizeof(ias_platform_info_blob_t),
+                (uint8_t*)&p_att_result_msg_body->mac,
+                sizeof(sgx_mac_t));
+        if((SGX_SUCCESS != ret) ||
+           (SGX_SUCCESS != status))
+        {
+            ret = -1;
+            return -1;
+        }
+
+        cout << "verification done" << endl;
+        bool attestation_passed = true;
 
 
 

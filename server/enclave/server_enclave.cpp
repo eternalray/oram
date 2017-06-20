@@ -52,3 +52,51 @@ sgx_status_t SGXAPI enclave_ra_close(sgx_ra_context_t context){
     ret = sgx_ra_close(context);
     return ret;
 }
+
+sgx_status_t verify_att_result_mac(sgx_ra_context_t context,
+                                   uint8_t* p_message,
+                                   size_t message_size,
+                                   uint8_t* p_mac,
+                                   size_t mac_size)
+{
+    sgx_status_t ret;
+    sgx_ec_key_128bit_t mk_key;
+
+    if(mac_size != sizeof(sgx_mac_t))
+    {
+        ret = SGX_ERROR_INVALID_PARAMETER;
+        return ret;
+    }
+    if(message_size > UINT32_MAX)
+    {
+        ret = SGX_ERROR_INVALID_PARAMETER;
+        return ret;
+    }
+
+    do {
+        uint8_t mac[SGX_CMAC_MAC_SIZE] = {0};
+
+        ret = sgx_ra_get_keys(context, SGX_RA_KEY_MK, &mk_key);
+        if(SGX_SUCCESS != ret)
+        {
+            break;
+        }
+        ret = sgx_rijndael128_cmac_msg(&mk_key,
+                                       p_message,
+                                       (uint32_t)message_size,
+                                       &mac);
+        if(SGX_SUCCESS != ret)
+        {
+            break;
+        }
+        if(0 == consttime_memequal(p_mac, mac, sizeof(mac)))
+        {
+            ret = SGX_ERROR_MAC_MISMATCH;
+            break;
+        }
+
+    }
+    while(0);
+
+    return ret;
+}

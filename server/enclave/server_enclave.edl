@@ -6,10 +6,15 @@ enclave {
 
     trusted {
         /* define ECALLs here. */
-      
+
         public sgx_status_t enclave_init_ra(int b_pse,
                                             [out] sgx_ra_context_t *p_context);
         public sgx_status_t enclave_ra_close(sgx_ra_context_t context);
+        public sgx_status_t verify_att_result_mac(sgx_ra_context_t context,
+                                                  [in,size=message_size] uint8_t* message,
+                                                  size_t message_size,
+                                                  [in,size=mac_size] uint8_t* mac,
+                                                  size_t mac_size);
     };
 
     untrusted {
