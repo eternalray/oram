@@ -97,6 +97,8 @@ int main(){
   ra_response_header_t* p_msg0_resp_full = NULL;
   ra_request_header_t* p_msg1_full = NULL;
   ra_response_header_t *p_msg2_full = NULL;
+  ra_request_header_t* p_msg3_full = NULL;
+  ra_response_header_t* p_att_result_msg_full = NULL;
 
   if(initializeEnclave()){
     cout << "Failed to initialize enclave" << endl;
@@ -197,6 +199,52 @@ int main(){
 
   send(sock, p_msg2_full, sizeof(ra_response_header_t) + p_msg2_full->size, 0);
 
+  p_msg3_full = (ra_request_header_t*)malloc(sizeof(ra_request_header_t));
+
+  valread = read(sock, p_msg3_full, sizeof(ra_request_header_t));
+  if(valread < 0){
+    cerr << "read failed" << endl;
+    return -1;
+  }
+
+  p_msg3_full = (ra_request_header_t*)realloc(p_msg3_full,
+                                              sizeof(ra_request_header_t)
+                                              + p_msg3_full->size);
+  valread = read(sock,
+                 (uint8_t*)p_msg3_full + sizeof(ra_request_header_t),
+                 p_msg3_full->size);
+
+  if(valread < 0){
+    cerr << "read failed" << endl;
+    return -1;
+  }
+
+  cout << "got msg3" << endl;
+
+  PRINT_BYTE_ARRAY(stdout, p_msg3_full->body, p_msg3_full->size);
+
+  ret = sp_ra_proc_msg3_req((const sample_ra_msg3_t*)((uint8_t*)p_msg3_full
+                            + sizeof(ra_request_header_t)),
+                            p_msg3_full->size,
+                            &p_att_result_msg_full);
+
+  if(ret != 0){
+    cerr << "sp_ra_proc_msg3_req failed" << endl;
+    return -1;
+  }
+
+  sample_ra_att_result_msg_t* p_att_result_msg_body =
+             (sample_ra_att_result_msg_t *)((uint8_t*)p_att_result_msg_full
+              + sizeof(ra_response_header_t));
+
+  cout << "ATTESTATION RESULT RECEIVED" << endl;
+
+  PRINT_BYTE_ARRAY(stdout, p_att_result_msg_full->body, p_att_result_msg_full->size);
+
+  cout << "send attestation result" << endl;
+
+  send(sock, p_att_result_msg_full, sizeof(ra_response_header_t)
+                                    + p_att_result_msg_full->size, 0) ;
 
 
 

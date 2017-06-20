@@ -12,6 +12,7 @@
 #include "sgx_ukey_exchange.h"
 #include "sgx_uae_service.h"
 #include "message.h"
+#include "remote_attestation_result.h"
 #define PORT 8080
 
 using namespace std;
@@ -39,6 +40,71 @@ void PRINT_BYTE_ARRAY(
     }
     fprintf(file, "0x%x ", array[i]);
     fprintf(file, "\n}\n");
+}
+
+void PRINT_ATTESTATION_SERVICE_RESPONSE(
+    FILE *file,
+    ra_response_header_t *response)
+{
+    if(!response)
+    {
+        fprintf(file, "\t\n( null )\n");
+        return;
+    }
+
+    fprintf(file, "RESPONSE TYPE:   0x%x\n", response->type);
+    fprintf(file, "RESPONSE STATUS: 0x%x 0x%x\n", response->status[0],
+            response->status[1]);
+    fprintf(file, "RESPONSE BODY SIZE: %u\n", response->size);
+
+    if(response->type == TYPE_RA_MSG2)
+    {
+        sgx_ra_msg2_t* p_msg2_body = (sgx_ra_msg2_t*)(response->body);
+
+        fprintf(file, "MSG2 gb - ");
+        PRINT_BYTE_ARRAY(file, &(p_msg2_body->g_b), sizeof(p_msg2_body->g_b));
+
+        fprintf(file, "MSG2 spid - ");
+        PRINT_BYTE_ARRAY(file, &(p_msg2_body->spid), sizeof(p_msg2_body->spid));
+
+        fprintf(file, "MSG2 quote_type : %hx\n", p_msg2_body->quote_type);
+
+        fprintf(file, "MSG2 kdf_id : %hx\n", p_msg2_body->kdf_id);
+
+        fprintf(file, "MSG2 sign_gb_ga - ");
+        PRINT_BYTE_ARRAY(file, &(p_msg2_body->sign_gb_ga),
+                         sizeof(p_msg2_body->sign_gb_ga));
+
+        fprintf(file, "MSG2 mac - ");
+        PRINT_BYTE_ARRAY(file, &(p_msg2_body->mac), sizeof(p_msg2_body->mac));
+
+        fprintf(file, "MSG2 sig_rl - ");
+        PRINT_BYTE_ARRAY(file, &(p_msg2_body->sig_rl),
+                         p_msg2_body->sig_rl_size);
+    }
+    else if(response->type == TYPE_RA_ATT_RESULT)
+    {
+        sample_ra_att_result_msg_t *p_att_result =
+            (sample_ra_att_result_msg_t *)(response->body);
+        fprintf(file, "ATTESTATION RESULT MSG platform_info_blob - ");
+        PRINT_BYTE_ARRAY(file, &(p_att_result->platform_info_blob),
+                         sizeof(p_att_result->platform_info_blob));
+
+        fprintf(file, "ATTESTATION RESULT MSG mac - ");
+        PRINT_BYTE_ARRAY(file, &(p_att_result->mac), sizeof(p_att_result->mac));
+
+        fprintf(file, "ATTESTATION RESULT MSG secret.payload_tag - %u bytes\n",
+                p_att_result->secret.payload_size);
+
+        fprintf(file, "ATTESTATION RESULT MSG secret.payload - ");
+        PRINT_BYTE_ARRAY(file, p_att_result->secret.payload,
+                p_att_result->secret.payload_size);
+    }
+    else
+    {
+        fprintf(file, "\nERROR in printing out the response. "
+                       "Response of type not supported %d\n", response->type);
+    }
 }
 
 void print_error_message(sgx_status_t ret){
@@ -95,10 +161,14 @@ int main(){
   int enclave_lost_retry_time = 1;
   int busy_retry_time = 4;
   sgx_status_t status;
-  ra_request_header_t* p_msg0_full;
-  ra_response_header_t* p_msg0_resp_full;
-  ra_request_header_t* p_msg1_full;
-  ra_response_header_t* p_msg2_full;
+  ra_request_header_t* p_msg0_full = NULL;
+  ra_response_header_t* p_msg0_resp_full = NULL;
+  ra_request_header_t* p_msg1_full = NULL;
+  ra_response_header_t* p_msg2_full = NULL;
+  ra_request_header_t* p_msg3_full = NULL;
+  ra_response_header_t* p_att_result_msg_full = NULL;
+  sgx_ra_msg3_t *p_msg3 = NULL;
+
 
   if(initializeEnclave()){
     cout << "Failed to initialize enclave" << endl;
@@ -197,7 +267,7 @@ int main(){
 
   if(SGX_SUCCESS != ret || status){
     ret = -1;
-    goto CLEANUP;
+    return -1;
   }
 
   cout << "enclave_init_ra success." << endl;
@@ -207,7 +277,7 @@ int main(){
 
   if(p_msg1_full == NULL){
     ret = -1;
-    goto CLEANUP;
+    return -1;
   }
 
   p_msg1_full->type = TYPE_RA_MSG1;
@@ -222,7 +292,7 @@ int main(){
 
   if(ret != SGX_SUCCESS){
     ret = -1;
-    goto CLEANUP;
+    return -1;
   }
 
   cout << "sgx_ra_get_msg1 success" << endl;
@@ -258,6 +328,95 @@ int main(){
   cout << "got msg2" << endl;
 
   PRINT_BYTE_ARRAY(stdout, p_msg2_full->body, p_msg2_full->size);
+
+  cout << "description about msg2" << endl;
+
+  PRINT_ATTESTATION_SERVICE_RESPONSE(stdout, p_msg2_full);
+
+  sgx_ra_msg2_t* p_msg2_body = (sgx_ra_msg2_t*)((uint8_t*)p_msg2_full
+                               + sizeof(ra_response_header_t));
+  uint32_t msg3_size = 0;
+  busy_retry_time = 2;
+
+  do{
+    ret = sgx_ra_proc_msg2(context,
+                        global_eid,
+                        sgx_ra_proc_msg2_trusted,
+                        sgx_ra_get_msg3_trusted,
+                        p_msg2_body,
+                        p_msg2_full->size,
+                        &p_msg3,
+                        &msg3_size);
+  }while(ret == SGX_ERROR_BUSY && busy_retry_time--);
+
+  if(!p_msg3){
+    cerr << "sgx_ra_proc_msg2 failed" << endl;
+    ret = -1;
+    goto CLEANUP;
+  }
+
+  if((sgx_status_t)ret != SGX_SUCCESS){
+    cerr << "sgx_ra_proc_msg2 failed" << endl;
+    ret = -1;
+    goto CLEANUP;
+  }
+
+  cout << "msg3 generated" << endl;
+
+  PRINT_BYTE_ARRAY(stdout, p_msg3, msg3_size);
+
+  p_msg3_full = (ra_request_header_t*)malloc(sizeof(ra_request_header_t) + msg3_size);
+
+  if(p_msg3_full == NULL){
+    ret = -1;
+    goto CLEANUP;
+  }
+
+  p_msg3_full->type = TYPE_RA_MSG3;
+  p_msg3_full->size = msg3_size;
+  memcpy(p_msg3_full->body, p_msg3, msg3_size);
+  if(p_msg3_full->body == NULL){
+    ret = -1;
+    goto CLEANUP;
+  }
+
+  cout << "send msg3" << endl;
+
+  send(new_socket, p_msg3_full, sizeof(ra_request_header_t) + msg3_size, 0);
+
+  p_att_result_msg_full = (ra_response_header_t*)malloc(sizeof(ra_response_header_t));
+
+  valread = read(new_socket, p_att_result_msg_full, sizeof(ra_response_header_t));
+
+  if(valread < 0){
+    cerr << "read failed" << endl;
+    return -1;
+  }
+
+  p_att_result_msg_full = (ra_response_header_t*)realloc(p_att_result_msg_full,
+                                                 sizeof(ra_response_header_t)
+                                                 + p_att_result_msg_full->size);
+  valread = read(new_socket, (uint8_t*)p_att_result_msg_full
+                             + sizeof(ra_response_header_t),
+                              p_att_result_msg_full->size);
+
+  if(valread < 0){
+    cerr << "read failed" << endl;
+    return -1;
+  }
+
+  cout << "got attestation result" << endl;
+
+  PRINT_BYTE_ARRAY(stdout, p_att_result_msg_full->body, p_att_result_msg_full->size);
+
+
+
+
+
+
+
+
+
 
 
   CLEANUP:
