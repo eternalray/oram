@@ -16,6 +16,11 @@
 #include "service_provider.h"
 
 #define PORT 8080
+
+#ifndef SAFE_FREE
+#define SAFE_FREE(ptr) {if (NULL != (ptr)) {free(ptr); (ptr) = NULL;}}
+#endif
+
 using namespace std;
 
 const string ENCLAVE_NAME = "enclave.signed.so";
@@ -90,8 +95,38 @@ int initializeEnclave(){
   return 0;
 }
 
+int initSocket(int* sockfd, struct sockaddr_in* address,
+               struct sockaddr_in* serv_addr){
+
+  if ((*sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+  {
+    printf("\n Socket creation error \n");
+    return -1;
+  }
+
+  memset(serv_addr, '0', sizeof(*serv_addr));
+
+  serv_addr->sin_family = AF_INET;
+  serv_addr->sin_port = htons(PORT);
+
+  if(inet_pton(AF_INET, "127.0.0.1", &(serv_addr->sin_addr))<=0){
+    printf("\nInvalid address/ Address not supported \n");
+    return -1;
+  }
+
+  if(connect(*sockfd, (struct sockaddr *)serv_addr, sizeof(*serv_addr)) < 0){
+    printf("\nConnection Failed \n");
+    return -1;
+  }
+
+  cout << "socket connected" << endl;
+
+  return 0;
+}
+
 int main(){
 
+  int valread;
   int ret;
   ra_request_header_t* p_msg0_full = NULL;
   ra_response_header_t* p_msg0_resp_full = NULL;
@@ -105,41 +140,27 @@ int main(){
     return -1;
   }
 
+
+
   struct sockaddr_in address;
-  int sock = 0, valread;
+  int sockfd;
   struct sockaddr_in serv_addr;
-  char buffer[1024] = {0};
-  if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-  {
-    printf("\n Socket creation error \n");
+
+  ret = initSocket(&sockfd, &address, &serv_addr);
+
+  if(ret != 0){
+    cerr << "initSocket failed" << endl;
     return -1;
   }
-
-  memset(&serv_addr, '0', sizeof(serv_addr));
-
-  serv_addr.sin_family = AF_INET;
-  serv_addr.sin_port = htons(PORT);
-
-  if(inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr)<=0){
-    printf("\nInvalid address/ Address not supported \n");
-    return -1;
-  }
-
-  if(connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0){
-    printf("\nConnection Failed \n");
-    return -1;
-  }
-
-  cout << "socket connected" << endl;
 
   const char* attestation_msg = "attestation";
-  send(sock, attestation_msg, strlen(attestation_msg), 0);
+  send(sockfd, attestation_msg, strlen(attestation_msg), 0);
   cout << "attestation message sent" << endl;
 
   p_msg0_full = (ra_request_header_t*)malloc(sizeof(ra_request_header_t)
                + sizeof(uint32_t));
 
-  valread = read(sock, p_msg0_full, sizeof(ra_request_header_t) + sizeof(uint32_t));
+  valread = read(sockfd, p_msg0_full, sizeof(ra_request_header_t) + sizeof(uint32_t));
   if(valread < 0){
     cerr << "read failed" << endl;
     return -1;
@@ -158,7 +179,6 @@ int main(){
   p_msg0_full->type = TYPE_RA_MSG0;
   p_msg0_full->size = sizeof(uint32_t);
 
-
   if(ret != 0){
     cout << "sp_ra_proc_msg0_req failed";
     *(uint32_t*)((uint8_t*)p_msg0_full + sizeof(ra_request_header_t)) = 1;
@@ -166,12 +186,12 @@ int main(){
   else
     *(uint32_t*)((uint8_t*)p_msg0_full + sizeof(ra_request_header_t)) = 0;
 
-  send(sock, p_msg0_full, sizeof(ra_request_header_t) + p_msg0_full->size, 0);
+  send(sockfd, p_msg0_full, sizeof(ra_request_header_t) + p_msg0_full->size, 0);
 
   p_msg1_full = (ra_request_header_t*)
                 malloc(sizeof(ra_request_header_t) + sizeof(sgx_ra_msg1_t));
 
-  valread = read(sock, p_msg1_full, sizeof(ra_request_header_t) + sizeof(sgx_ra_msg1_t));
+  valread = read(sockfd, p_msg1_full, sizeof(ra_request_header_t) + sizeof(sgx_ra_msg1_t));
 
   if(valread < 0){
     cout << "read failed" << endl;
@@ -197,11 +217,11 @@ int main(){
 
   cout << "send msg2" << endl;
 
-  send(sock, p_msg2_full, sizeof(ra_response_header_t) + p_msg2_full->size, 0);
+  send(sockfd, p_msg2_full, sizeof(ra_response_header_t) + p_msg2_full->size, 0);
 
   p_msg3_full = (ra_request_header_t*)malloc(sizeof(ra_request_header_t));
 
-  valread = read(sock, p_msg3_full, sizeof(ra_request_header_t));
+  valread = read(sockfd, p_msg3_full, sizeof(ra_request_header_t));
   if(valread < 0){
     cerr << "read failed" << endl;
     return -1;
@@ -210,7 +230,7 @@ int main(){
   p_msg3_full = (ra_request_header_t*)realloc(p_msg3_full,
                                               sizeof(ra_request_header_t)
                                               + p_msg3_full->size);
-  valread = read(sock,
+  valread = read(sockfd,
                  (uint8_t*)p_msg3_full + sizeof(ra_request_header_t),
                  p_msg3_full->size);
 
@@ -243,14 +263,15 @@ int main(){
 
   cout << "send attestation result" << endl;
 
-  send(sock, p_att_result_msg_full, sizeof(ra_response_header_t)
-                                    + p_att_result_msg_full->size, 0) ;
+  send(sockfd, p_att_result_msg_full, sizeof(ra_response_header_t)
+                                    + p_att_result_msg_full->size, 0);
+  close(sockfd);
+  SAFE_FREE(p_msg0_full);
+  SAFE_FREE(p_msg0_resp_full);
+  SAFE_FREE(p_msg1_full);
+  SAFE_FREE(p_msg2_full);
+  SAFE_FREE(p_msg3_full);
+  SAFE_FREE(p_att_result_msg_full);  
 
-
-
-
-
-  if(p_msg0_full != NULL)
-    free(p_msg0_full);
 
 }

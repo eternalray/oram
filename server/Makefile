@@ -80,7 +80,7 @@ endif
 App_Cpp_Files := app/server_app.cpp
 App_Include_Paths := -Iapp -I$(SGX_SDK)/include -Isample_libcrypto
 
-App_C_Flags := $(SGX_COMMON_CFLAGS) -fPIC -Wno-attributes $(App_Include_Paths)
+App_C_Flags := $(SGX_COMMON_CFLAGS) -fPIC -Wno-attributes $(App_Include_Paths) -Isample_libcrypto
 
 # Three configuration modes - Debug, prerelease, release
 #   Debug - Macro DEBUG enabled.

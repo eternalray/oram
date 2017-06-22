@@ -15,6 +15,10 @@
 #include "remote_attestation_result.h"
 #define PORT 8080
 
+#ifndef SAFE_FREE
+#define SAFE_FREE(ptr) {if (NULL != (ptr)) {free(ptr); (ptr) = NULL;}}
+#endif
+
 using namespace std;
 
 const string ENCLAVE_NAME = "enclave.signed.so";
@@ -154,7 +158,180 @@ int initializeEnclave(){
   return 0;
 }
 
+int initSocket(int* sockfd, struct sockaddr_in* address, int* opt){
+
+  int addrlen = sizeof(address);
+
+  cout << "initializing connection..." << endl;
+  if ((*sockfd = socket(AF_INET, SOCK_STREAM, 0)) == 0){
+      perror("socket failed");
+      return -1;
+  }
+
+  if (setsockopt(*sockfd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
+                                                  opt, sizeof(*opt))){
+      perror("setsockopt");
+      return -1;
+  }
+  address->sin_family = AF_INET;
+  address->sin_addr.s_addr = INADDR_ANY;
+  address->sin_port = htons( PORT );
+
+  if (bind(*sockfd, (struct sockaddr *)address,
+                                 sizeof(*address))<0){
+      perror("bind failed");
+      return -1;
+  }
+  if (listen(*sockfd, 3) < 0){
+      perror("listen");
+      return -1;
+  }
+  if ((*sockfd = accept(*sockfd, (struct sockaddr *)address,
+                       (socklen_t*)&addrlen))<0){
+      perror("accept");
+      return -1;
+  }
+
+  return 0;
+}
+
+int genMsg0(ra_request_header_t** p_msg0_full){
+  uint32_t extended_epid_group_id = 0;
+  int ret;
+  ret = sgx_get_extended_epid_group_id(&extended_epid_group_id);
+
+  if(ret != SGX_SUCCESS){
+    cerr << "sgx_get_extended_epid_group_id failed inside genMsg0" << endl;
+    return -1;
+  }
+
+  cout << "sgx_get_extended_epid_group_id success" << endl;
+
+  *p_msg0_full = (ra_request_header_t*)malloc(sizeof(ra_request_header_t)
+                + sizeof(uint32_t));
+
+  if(*p_msg0_full == NULL){
+    cerr << "memory problem with msg0" << endl;
+    return -1;
+  }
+
+  (*p_msg0_full)->type = TYPE_RA_MSG0;
+  (*p_msg0_full)->size = sizeof(uint32_t);
+
+  *(uint32_t*)((uint8_t*)*p_msg0_full + sizeof(ra_request_header_t)) = extended_epid_group_id;
+
+  cout << "msg0 body" << endl;
+  PRINT_BYTE_ARRAY(stdout, (*p_msg0_full)->body, (*p_msg0_full)->size);
+
+  return 0;
+}
+
+int genMsg1(sgx_status_t* status, sgx_ra_context_t* context,
+             ra_request_header_t** p_msg1_full, int busy_retry_time,
+              int enclave_lost_retry_time){
+  int ret;
+
+  do{
+    ret = enclave_init_ra(global_eid, status, false, context);
+  }while(ret == SGX_ERROR_ENCLAVE_LOST && enclave_lost_retry_time--);
+
+  if(SGX_SUCCESS != ret || *status){
+    cerr << "enclave_init_ra failed" << endl;
+    return -1;
+  }
+
+  cout << "enclave_init_ra success." << endl;
+
+  *p_msg1_full = (ra_request_header_t*)
+                malloc(sizeof(ra_request_header_t) + sizeof(sgx_ra_msg1_t));
+
+  if(*p_msg1_full == NULL){
+    cerr << "memory problem with msg1" << endl;
+    return -1;
+  }
+
+  (*p_msg1_full)->type = TYPE_RA_MSG1;
+  (*p_msg1_full)->size = sizeof(sgx_ra_msg1_t);
+
+  do{
+    ret = sgx_ra_get_msg1(*context, global_eid, sgx_ra_get_ga,
+                          (sgx_ra_msg1_t*)((uint8_t*)*p_msg1_full
+                          + sizeof(ra_request_header_t)));
+    sleep(3);
+  }while(ret == SGX_ERROR_BUSY && busy_retry_time--);
+
+  if(ret != SGX_SUCCESS){
+    cerr << "sgx_ra_get_msg1 failed" << endl;
+    return -1;
+  }
+
+  cout << "sgx_ra_get_msg1 success" << endl;
+  cout << "msg1 body generated" << endl;
+  PRINT_BYTE_ARRAY(stdout, (*p_msg1_full)->body, (*p_msg1_full)->size);
+
+  return 0;
+}
+
+int genMsg3(ra_response_header_t* p_msg2_full,
+            ra_request_header_t** p_msg3_full,
+            sgx_ra_context_t context,
+            uint32_t* msg3_size
+            ){
+  sgx_ra_msg2_t* p_msg2_body = (sgx_ra_msg2_t*)((uint8_t*)p_msg2_full
+                               + sizeof(ra_response_header_t));
+  sgx_ra_msg3_t* p_msg3 = NULL;
+  int busy_retry_time = 2;
+  int ret;
+
+  do{
+    ret = sgx_ra_proc_msg2(context,
+                        global_eid,
+                        sgx_ra_proc_msg2_trusted,
+                        sgx_ra_get_msg3_trusted,
+                        p_msg2_body,
+                        p_msg2_full->size,
+                        &p_msg3,
+                        msg3_size);
+  }while(ret == SGX_ERROR_BUSY && busy_retry_time--);
+
+  if(!p_msg3){
+    cerr << "sgx_ra_proc_msg2 failed" << endl;
+    return -1;
+  }
+
+  if((sgx_status_t)ret != SGX_SUCCESS){
+    cerr << "sgx_ra_proc_msg2 failed" << endl;
+    return -1;
+  }
+
+  cout << "msg3 generated" << endl;
+
+  PRINT_BYTE_ARRAY(stdout, p_msg3, *msg3_size);
+
+  *p_msg3_full = (ra_request_header_t*)malloc(sizeof(ra_request_header_t) + *msg3_size);
+
+  if(*p_msg3_full == NULL){
+    cerr << "memory problem with msg3" << endl;
+    return -1;
+  }
+
+  (*p_msg3_full)->type = TYPE_RA_MSG3;
+  (*p_msg3_full)->size = *msg3_size;
+  memcpy((*p_msg3_full)->body, p_msg3, *msg3_size);
+  if((*p_msg3_full)->body == NULL){
+    cerr << "assembling msg3 failed" << endl;
+    return -1;
+  }
+
+  return 0;
+}
+
 int main(){
+
+  int sockfd, valread;
+  struct sockaddr_in address;
+  int opt = 1;
+  char buffer[1024] = {0};
 
   sgx_ra_context_t context = INT_MAX;
   int ret;
@@ -167,52 +344,22 @@ int main(){
   ra_response_header_t* p_msg2_full = NULL;
   ra_request_header_t* p_msg3_full = NULL;
   ra_response_header_t* p_att_result_msg_full = NULL;
-  sgx_ra_msg3_t *p_msg3 = NULL;
 
 
   if(initializeEnclave()){
-    cout << "Failed to initialize enclave" << endl;
+    cerr << "Failed to initialize enclave" << endl;
     return -1;
   }
 
-  int server_fd, new_socket, valread;
-  struct sockaddr_in address;
-  int opt = 1;
-  int addrlen = sizeof(address);
-  char buffer[1024] = {0};
+  ret = initSocket(&sockfd, &address, &opt);
 
-  cout << "initializing connection..." << endl;
-  if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0){
-      perror("socket failed");
-      exit(EXIT_FAILURE);
-  }
-
-  if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
-                                                  &opt, sizeof(opt))){
-      perror("setsockopt");
-      exit(EXIT_FAILURE);
-  }
-  address.sin_family = AF_INET;
-  address.sin_addr.s_addr = INADDR_ANY;
-  address.sin_port = htons( PORT );
-
-  if (bind(server_fd, (struct sockaddr *)&address,
-                                 sizeof(address))<0){
-      perror("bind failed");
-      exit(EXIT_FAILURE);
-  }
-  if (listen(server_fd, 3) < 0){
-      perror("listen");
-      exit(EXIT_FAILURE);
-  }
-  if ((new_socket = accept(server_fd, (struct sockaddr *)&address,
-                       (socklen_t*)&addrlen))<0){
-      perror("accept");
-      exit(EXIT_FAILURE);
+  if(ret != 0){
+    cerr << "initSocket failed" << endl;
+    return -1;
   }
 
   cout << "wating for attestation request" << endl;
-  valread = read(new_socket, buffer, 1024);
+  valread = read(sockfd, buffer, 1024);
 
   if(valread > 0 && !strcmp(buffer,"attestation"))
     cout << "got attestation request from client" << endl;
@@ -221,39 +368,20 @@ int main(){
     return -1;
   }
 
+  ret = genMsg0(&p_msg0_full);
 
-  uint32_t extended_epid_group_id = 0;
-  ret = sgx_get_extended_epid_group_id(&extended_epid_group_id);
-  if(ret != SGX_SUCCESS){
-    cerr << "sgx_get_extended_epid_group_id failed" << endl;
+  if(ret != 0){
+    cerr << "generating msg0 failed" << endl;
     return -1;
   }
 
-  cout << "sgx_get_extended_epid_group_id success" << endl;
-
-  p_msg0_full = (ra_request_header_t*)malloc(sizeof(ra_request_header_t)
-                + sizeof(uint32_t));
-
-  if(p_msg0_full == NULL){
-    ret = -1;
-    //goto CLEANUP;
-  }
-
-  p_msg0_full->type = TYPE_RA_MSG0;
-  p_msg0_full->size = sizeof(uint32_t);
-
-  *(uint32_t*)((uint8_t*)p_msg0_full + sizeof(ra_request_header_t)) = extended_epid_group_id;
-
-  cout << "msg0 body" << endl;
-  PRINT_BYTE_ARRAY(stdout, p_msg0_full->body, p_msg0_full->size);
-
   cout << "send msg0 to SP" << endl;
-  send(new_socket, p_msg0_full, sizeof(ra_request_header_t) + p_msg0_full->size, 0);
+  send(sockfd, p_msg0_full, sizeof(ra_request_header_t) + p_msg0_full->size, 0);
 
   p_msg0_resp_full = (ra_response_header_t*)malloc(sizeof(ra_response_header_t)
   + sizeof(uint32_t));
 
-  read(new_socket, p_msg0_resp_full, sizeof(ra_response_header_t) + sizeof(uint32_t));
+  read(sockfd, p_msg0_resp_full, sizeof(ra_response_header_t) + sizeof(uint32_t));
   if(*(uint32_t*)((uint8_t*)p_msg0_resp_full + sizeof(ra_response_header_t)) == 1){
     cout << "invaild epid" << endl;
     return -1;
@@ -261,64 +389,33 @@ int main(){
   else
     cout << "got msg0 response" <<endl;
 
-  do{
-    ret = enclave_init_ra(global_eid, &status, false, &context);
-  }while(ret == SGX_ERROR_ENCLAVE_LOST && enclave_lost_retry_time--);
+  ret = genMsg1(&status, &context, &p_msg1_full,
+                 busy_retry_time, enclave_lost_retry_time);
 
-  if(SGX_SUCCESS != ret || status){
-    ret = -1;
+  if(ret != 0){
+    cerr << "generating msg1 failed" << endl;
     return -1;
   }
-
-  cout << "enclave_init_ra success." << endl;
-
-  p_msg1_full = (ra_request_header_t*)
-                malloc(sizeof(ra_request_header_t) + sizeof(sgx_ra_msg1_t));
-
-  if(p_msg1_full == NULL){
-    ret = -1;
-    return -1;
-  }
-
-  p_msg1_full->type = TYPE_RA_MSG1;
-  p_msg1_full->size = sizeof(sgx_ra_msg1_t);
-
-  do{
-    ret = sgx_ra_get_msg1(context, global_eid, sgx_ra_get_ga,
-                          (sgx_ra_msg1_t*)((uint8_t*)p_msg1_full
-                          + sizeof(ra_request_header_t)));
-    sleep(3);
-  }while(ret == SGX_ERROR_BUSY && busy_retry_time--);
-
-  if(ret != SGX_SUCCESS){
-    ret = -1;
-    return -1;
-  }
-
-  cout << "sgx_ra_get_msg1 success" << endl;
-  cout << "msg1 body generated" << endl;
-  PRINT_BYTE_ARRAY(stdout, p_msg1_full->body, p_msg1_full->size);
 
   cout << "send msg1 to SP, expect msg2" << endl;
-  send(new_socket, p_msg1_full, sizeof(ra_request_header_t) + p_msg1_full->size, 0);
+  send(sockfd, p_msg1_full, sizeof(ra_request_header_t) + p_msg1_full->size, 0);
 
   p_msg2_full = (ra_response_header_t*)malloc(sizeof(ra_response_header_t));
 
-  valread = read(new_socket, p_msg2_full, sizeof(ra_response_header_t));
+  valread = read(sockfd, p_msg2_full, sizeof(ra_response_header_t));
 
   if(valread < 0){
     cerr << "read failed" << endl;
     return -1;
   }
 
-
   p_msg2_full = (ra_response_header_t*)
-                 realloc(p_msg2_full,
-                         sizeof(ra_response_header_t) + p_msg2_full->size);
+                  realloc(p_msg2_full,
+                          sizeof(ra_response_header_t) + p_msg2_full->size);
 
-  valread = read(new_socket,
-                 (uint8_t*)p_msg2_full + sizeof(ra_response_header_t),
-                  p_msg2_full->size);
+  valread = read(sockfd,
+                  (uint8_t*)p_msg2_full + sizeof(ra_response_header_t),
+                   p_msg2_full->size);
 
   if(valread < 0){
     cerr << "read failed" << endl;
@@ -333,60 +430,22 @@ int main(){
 
   PRINT_ATTESTATION_SERVICE_RESPONSE(stdout, p_msg2_full);
 
-  sgx_ra_msg2_t* p_msg2_body = (sgx_ra_msg2_t*)((uint8_t*)p_msg2_full
-                               + sizeof(ra_response_header_t));
-  uint32_t msg3_size = 0;
-  busy_retry_time = 2;
+  uint32_t msg3_size;
 
-  do{
-    ret = sgx_ra_proc_msg2(context,
-                        global_eid,
-                        sgx_ra_proc_msg2_trusted,
-                        sgx_ra_get_msg3_trusted,
-                        p_msg2_body,
-                        p_msg2_full->size,
-                        &p_msg3,
-                        &msg3_size);
-  }while(ret == SGX_ERROR_BUSY && busy_retry_time--);
+  ret = genMsg3(p_msg2_full, &p_msg3_full, context, &msg3_size);
 
-  if(!p_msg3){
-    cerr << "sgx_ra_proc_msg2 failed" << endl;
-    ret = -1;
-    return -1;
-  }
-
-  if((sgx_status_t)ret != SGX_SUCCESS){
-    cerr << "sgx_ra_proc_msg2 failed" << endl;
-    ret = -1;
-    return -1;
-  }
-
-  cout << "msg3 generated" << endl;
-
-  PRINT_BYTE_ARRAY(stdout, p_msg3, msg3_size);
-
-  p_msg3_full = (ra_request_header_t*)malloc(sizeof(ra_request_header_t) + msg3_size);
-
-  if(p_msg3_full == NULL){
-    ret = -1;
-    return -1;
-  }
-
-  p_msg3_full->type = TYPE_RA_MSG3;
-  p_msg3_full->size = msg3_size;
-  memcpy(p_msg3_full->body, p_msg3, msg3_size);
-  if(p_msg3_full->body == NULL){
-    ret = -1;
+  if(ret != 0){
+    cerr << "generating msg3 failed" << endl;
     return -1;
   }
 
   cout << "send msg3" << endl;
 
-  send(new_socket, p_msg3_full, sizeof(ra_request_header_t) + msg3_size, 0);
+  send(sockfd, p_msg3_full, sizeof(ra_request_header_t) + msg3_size, 0);
 
   p_att_result_msg_full = (ra_response_header_t*)malloc(sizeof(ra_response_header_t));
 
-  valread = read(new_socket, p_att_result_msg_full, sizeof(ra_response_header_t));
+  valread = read(sockfd, p_att_result_msg_full, sizeof(ra_response_header_t));
 
   if(valread < 0){
     cerr << "read failed" << endl;
@@ -396,7 +455,7 @@ int main(){
   p_att_result_msg_full = (ra_response_header_t*)realloc(p_att_result_msg_full,
                                                  sizeof(ra_response_header_t)
                                                  + p_att_result_msg_full->size);
-  valread = read(new_socket, (uint8_t*)p_att_result_msg_full
+  valread = read(sockfd, (uint8_t*)p_att_result_msg_full
                              + sizeof(ra_response_header_t),
                               p_att_result_msg_full->size);
 
@@ -430,13 +489,13 @@ int main(){
         cout << "verification done" << endl;
         bool attestation_passed = true;
 
-
-
-
-
-
-
-
+        close(sockfd);
+        SAFE_FREE(p_msg0_full);
+        SAFE_FREE(p_msg0_resp_full);
+        SAFE_FREE(p_msg1_full);
+        SAFE_FREE(p_msg2_full);
+        SAFE_FREE(p_msg3_full);
+        SAFE_FREE(p_att_result_msg_full);
 
 
 
