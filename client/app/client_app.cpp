@@ -15,6 +15,8 @@
 #include "message.h"
 #include "service_provider.h"
 
+
+
 #define PORT 8080
 
 #ifndef SAFE_FREE
@@ -27,6 +29,7 @@ const string ENCLAVE_NAME = "enclave.signed.so";
 const string ENCLAVE_TOKEN = "enclave.token";
 
 sgx_enclave_id_t global_eid = 0;
+
 
 void PRINT_BYTE_ARRAY(
     FILE *file, void *mem, uint32_t len)
@@ -48,6 +51,9 @@ void PRINT_BYTE_ARRAY(
     fprintf(file, "\n}\n");
 }
 
+void ocall_print_string(unsigned char* string, int length){
+  PRINT_BYTE_ARRAY(stdout, string, length);
+}
 void print_error_message(sgx_status_t ret){
   cout << "SGX error code : " << ret << endl;
 }
@@ -125,7 +131,8 @@ int initSocket(int* sockfd, struct sockaddr_in* address,
 }
 
 int main(){
-
+  unsigned char* rand_string;
+  int length = 32;
   int valread;
   int ret;
   ra_request_header_t* p_msg0_full = NULL;
@@ -134,11 +141,14 @@ int main(){
   ra_response_header_t *p_msg2_full = NULL;
   ra_request_header_t* p_msg3_full = NULL;
   ra_response_header_t* p_att_result_msg_full = NULL;
+  sample_ec_dh_shared_t session_key = {{0}};
 
   if(initializeEnclave()){
     cout << "Failed to initialize enclave" << endl;
     return -1;
   }
+
+  sample(global_eid);
 
 
 
@@ -204,7 +214,10 @@ int main(){
 
   ret = sp_ra_proc_msg1_req((const sample_ra_msg1_t*)((uint8_t*)p_msg1_full + sizeof(ra_request_header_t)),
   						              p_msg1_full->size,
-  						              &p_msg2_full);
+  						              &p_msg2_full,
+                            &session_key);
+
+  PRINT_BYTE_ARRAY(stdout, &session_key, 32);
 
   if(ret != 0){
     cerr << "sp_ra_proc_msg1_req failed" << endl;
@@ -271,7 +284,7 @@ int main(){
   SAFE_FREE(p_msg1_full);
   SAFE_FREE(p_msg2_full);
   SAFE_FREE(p_msg3_full);
-  SAFE_FREE(p_att_result_msg_full);  
+  SAFE_FREE(p_att_result_msg_full);
 
 
 }

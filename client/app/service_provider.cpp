@@ -194,7 +194,8 @@ int sp_ra_proc_msg0_req(const sample_ra_msg0_t *p_msg0, uint32_t msg0_size){
 
 int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
 						uint32_t msg1_size,
-						ra_response_header_t **pp_msg2)
+						ra_response_header_t **pp_msg2,
+            sample_ec_dh_shared_t* session_key)
 {
     int ret = 0;
     ra_response_header_t* p_msg2_full = NULL;
@@ -276,10 +277,9 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
         }
 
         // Generate the client/SP shared secret
-        sample_ec_dh_shared_t dh_key = {{0}};
         sample_ret = sample_ecc256_compute_shared_dhkey(&priv_key,
             (sample_ec256_public_t *)&p_msg1->g_a,
-            (sample_ec256_dh_shared_t *)&dh_key,
+            (sample_ec256_dh_shared_t *)session_key,
             ecc_state);
         if(SAMPLE_SUCCESS != sample_ret)
         {
@@ -292,7 +292,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
 #ifdef SUPPLIED_KEY_DERIVATION
 
         // smk is only needed for msg2 generation.
-        derive_ret = derive_key(&dh_key, SAMPLE_DERIVE_KEY_SMK_SK,
+        derive_ret = derive_key(session_key, SAMPLE_DERIVE_KEY_SMK_SK,
             &g_sp_db.smk_key, &g_sp_db.sk_key);
         if(derive_ret != true)
         {
@@ -302,7 +302,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
         }
 
         // The rest of the keys are the shared secrets for future communication.
-        derive_ret = derive_key(&dh_key, SAMPLE_DERIVE_KEY_MK_VK,
+        derive_ret = derive_key(session_key, SAMPLE_DERIVE_KEY_MK_VK,
             &g_sp_db.mk_key, &g_sp_db.vk_key);
         if(derive_ret != true)
         {
@@ -312,7 +312,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
         }
 #else
         // smk is only needed for msg2 generation.
-        derive_ret = derive_key(&dh_key, SAMPLE_DERIVE_KEY_SMK,
+        derive_ret = derive_key(session_key, SAMPLE_DERIVE_KEY_SMK,
                                 &g_sp_db.smk_key);
         if(derive_ret != true)
         {
@@ -322,7 +322,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
         }
 
         // The rest of the keys are the shared secrets for future communication.
-        derive_ret = derive_key(&dh_key, SAMPLE_DERIVE_KEY_MK,
+        derive_ret = derive_key(session_key, SAMPLE_DERIVE_KEY_MK,
                                 &g_sp_db.mk_key);
         if(derive_ret != true)
         {
@@ -331,7 +331,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
             break;
         }
 
-        derive_ret = derive_key(&dh_key, SAMPLE_DERIVE_KEY_SK,
+        derive_ret = derive_key(session_key, SAMPLE_DERIVE_KEY_SK,
                                 &g_sp_db.sk_key);
         if(derive_ret != true)
         {
@@ -340,7 +340,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
             break;
         }
 
-        derive_ret = derive_key(&dh_key, SAMPLE_DERIVE_KEY_VK,
+        derive_ret = derive_key(session_key, SAMPLE_DERIVE_KEY_VK,
                                 &g_sp_db.vk_key);
         if(derive_ret != true)
         {

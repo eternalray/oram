@@ -1,0 +1,47 @@
+#ifndef PTHREAD_U_H__
+#define PTHREAD_U_H__
+
+#include <stdint.h>
+#include <wchar.h>
+#include <stddef.h>
+#include <string.h>
+#include "sgx_edger8r.h" /* for sgx_satus_t etc. */
+
+#include "struct/sgx_pthread_struct.h"
+#include "sgx_eid.h"
+
+#include <stdlib.h> /* for size_t */
+
+#define SGX_CAST(type, item) ((type)(item))
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_create, (pthread_t* new_thread, const pthread_attr_t* attribute, unsigned long int job_id, sgx_enclave_id_t eid));
+pthread_t SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_self, ());
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_join, (pthread_t pt, void** thread_result));
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_detach, (pthread_t pt));
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_equal, (pthread_t pt1, pthread_t pt2));
+void SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_exit, (void* retval));
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_cancel, (pthread_t th));
+void SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_testcancel, ());
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_attr_init, (pthread_attr_t* __attr));
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_attr_destroy, (pthread_attr_t* __attr));
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_attr_getdetachstate, (const pthread_attr_t* __attr, int* __detachstate));
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_attr_setdetachstate, (pthread_attr_t* __attr, int __detachstate));
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_attr_getguardsize, (const pthread_attr_t* __attr, size_t* __guardsize));
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_attr_setguardsize, (pthread_attr_t* __attr, size_t __guardsize));
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_attr_getschedpolicy, (const pthread_attr_t* __attr, int* __policy));
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_attr_setschedpolicy, (pthread_attr_t* __attr, int __policy));
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_attr_getstacksize, (const pthread_attr_t* __attr, size_t* __stacksize));
+int SGX_UBRIDGE(SGX_NOCONVENTION, ocall_pthread_attr_setstacksize, (pthread_attr_t* __attr, size_t __stacksize));
+
+sgx_status_t ecall_set_enclave_id(sgx_enclave_id_t eid, sgx_enclave_id_t self_eid);
+sgx_status_t ecall_execute_job(sgx_enclave_id_t eid, pthread_t pthread_self_id, unsigned long int job_id);
+
+#ifdef __cplusplus
+}
+#endif /* __cplusplus */
+
+#endif
